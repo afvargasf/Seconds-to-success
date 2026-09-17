@@ -1,1 +1,289 @@
+name: Build APK
 
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Create Android project
+        run: |
+          mkdir -p app/src/main/java/com/secondstosuccess/app
+          mkdir -p app/src/main/res/values
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "SecondsToSuccess"
+          include(":app")
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.6.1' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.secondstosuccess.app'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId "com.secondstosuccess.app"
+                  minSdk 23
+                  targetSdk 35
+                  versionCode 1
+                  versionName "1.0"
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <application
+                  android:allowBackup="true"
+                  android:label="Seconds to Success"
+                  android:theme="@style/AppTheme">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+
+                  </activity>
+
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:windowBackground">#000000</item>
+                  <item name="android:statusBarColor">#000000</item>
+                  <item name="android:navigationBarColor">#000000</item>
+                  <item name="android:colorAccent">#FFFFFF</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/java/com/secondstosuccess/app/MainActivity.java <<'EOF'
+          package com.secondstosuccess.app;
+
+          import android.app.Activity;
+          import android.graphics.Color;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.view.Gravity;
+          import android.view.ViewGroup;
+          import android.widget.LinearLayout;
+          import android.widget.ProgressBar;
+          import android.widget.TextView;
+
+          import java.util.Locale;
+
+          public class MainActivity extends Activity {
+
+              // 11 Sep 2026, 8:00 p. m. Bogotá
+              private static final long START_MS = 1789174800000L;
+
+              // 180 días exactos
+              private static final long TOTAL_MS =
+                      180L * 24L * 60L * 60L * 1000L;
+
+              private final Handler handler =
+                      new Handler(Looper.getMainLooper());
+
+              private TextView percentageView;
+              private ProgressBar progressBar;
+
+              private final Runnable ticker = new Runnable() {
+                  @Override
+                  public void run() {
+                      updatePercentage();
+
+                      long now = System.currentTimeMillis();
+                      long delay = 1000L - (now % 1000L);
+
+                      handler.postDelayed(this, delay);
+                  }
+              };
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setGravity(Gravity.CENTER);
+                  root.setPadding(dp(24), dp(40), dp(24), dp(40));
+                  root.setBackgroundColor(Color.BLACK);
+
+                  TextView title = new TextView(this);
+                  title.setText("SECONDS TO SUCCESS");
+                  title.setTextColor(Color.rgb(150, 150, 150));
+                  title.setTextSize(14);
+                  title.setGravity(Gravity.CENTER);
+
+                  percentageView = new TextView(this);
+                  percentageView.setText("0.0000000%");
+                  percentageView.setTextColor(Color.WHITE);
+                  percentageView.setTextSize(44);
+                  percentageView.setGravity(Gravity.CENTER);
+                  percentageView.setPadding(0, dp(20), 0, dp(28));
+                  percentageView.setSingleLine(true);
+
+                  progressBar = new ProgressBar(
+                          this,
+                          null,
+                          android.R.attr.progressBarStyleHorizontal
+                  );
+
+                  progressBar.setMax(1000000);
+
+                  LinearLayout.LayoutParams barParams =
+                          new LinearLayout.LayoutParams(
+                                  ViewGroup.LayoutParams.MATCH_PARENT,
+                                  dp(8)
+                          );
+
+                  barParams.setMargins(0, 0, 0, dp(26));
+
+                  TextView dates = new TextView(this);
+                  dates.setText(
+                          "11 sep 2026 · 8:00 p. m.\n" +
+                          "180 días\n" +
+                          "10 mar 2027 · 8:00 p. m."
+                  );
+                  dates.setTextColor(Color.rgb(130, 130, 130));
+                  dates.setTextSize(13);
+                  dates.setGravity(Gravity.CENTER);
+
+                  root.addView(title);
+                  root.addView(percentageView);
+                  root.addView(progressBar, barParams);
+                  root.addView(dates);
+
+                  setContentView(root);
+
+                  updatePercentage();
+              }
+
+              @Override
+              protected void onStart() {
+                  super.onStart();
+                  handler.removeCallbacks(ticker);
+                  ticker.run();
+              }
+
+              @Override
+              protected void onStop() {
+                  handler.removeCallbacks(ticker);
+                  super.onStop();
+              }
+
+              private void updatePercentage() {
+                  long now = System.currentTimeMillis();
+
+                  long elapsed =
+                          Math.max(
+                                  0L,
+                                  Math.min(now - START_MS, TOTAL_MS)
+                          );
+
+                  double percentage =
+                          elapsed * 100.0 / TOTAL_MS;
+
+                  percentageView.setText(
+                          String.format(
+                                  Locale.US,
+                                  "%.7f%%",
+                                  percentage
+                          )
+                  );
+
+                  int progress =
+                          (int) Math.round(
+                                  elapsed * 1000000.0 / TOTAL_MS
+                          );
+
+                  progressBar.setProgress(progress);
+              }
+
+              private int dp(int value) {
+                  return Math.round(
+                          value *
+                          getResources()
+                                  .getDisplayMetrics()
+                                  .density
+                  );
+              }
+          }
+          EOF
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build APK
+        run: gradle :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Seconds-to-success-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
