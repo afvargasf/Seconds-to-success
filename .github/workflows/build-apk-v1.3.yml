@@ -1,0 +1,925 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android platform
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Create Android project
+        run: |
+          mkdir -p app/src/main/java/com/secondstosuccess/app
+          mkdir -p app/src/main/res/values
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "SecondsToSuccess"
+          include(":app")
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.6.1' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.secondstosuccess.app'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId "com.secondstosuccess.app"
+                  minSdk 23
+                  targetSdk 35
+                  versionCode 3
+                  versionName "1.2"
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="Seconds to Success"
+                  android:theme="@style/AppTheme">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+
+                  </activity>
+
+                  <receiver
+                      android:name=".NotificationReceiver"
+                      android:exported="false" />
+
+                  <receiver
+                      android:name=".DailyScheduleReceiver"
+                      android:exported="false" />
+
+                  <receiver
+                      android:name=".BootReceiver"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                      </intent-filter>
+
+                  </receiver>
+
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:windowBackground">#000000</item>
+                  <item name="android:statusBarColor">#000000</item>
+                  <item name="android:navigationBarColor">#000000</item>
+                  <item name="android:colorAccent">#FFFFFF</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/java/com/secondstosuccess/app/ProgressTime.java <<'EOF'
+          package com.secondstosuccess.app;
+
+          import java.util.Locale;
+
+          public final class ProgressTime {
+
+              // 11 Sep 2026, 8:00 p. m. Bogotá (UTC-5)
+              public static final long START_MS = 1789174800000L;
+
+              // 180 días exactos
+              public static final long TOTAL_MS =
+                      180L * 24L * 60L * 60L * 1000L;
+
+              public static final long END_MS = START_MS + TOTAL_MS;
+
+              /*
+               * Modelo de persistencia para un hábito nuevo difícil.
+               *
+               * Aproximación Weibull para un hábito nuevo muy difícil.
+               * Se conserva una mediana de persistencia de 14 semanas
+               * y se fuerza S(180 días) = 2%.
+               *
+               * Anclas:
+               * - S(14 semanas) = 50%
+               * - S(180 días) = 2%
+               *
+               * S(t) = exp(-(t / scale)^shape)
+               *
+               * Es un modelo de referencia, no una ley universal.
+               */
+              private static final double SURVIVAL_SHAPE =
+                      2.846377967351929;
+
+              private static final double SURVIVAL_SCALE_WEEKS =
+                      15.923913927836082;
+
+              private static final double WEEK_MS =
+                      7.0 * 24.0 * 60.0 * 60.0 * 1000.0;
+
+              private ProgressTime() {}
+
+              public static long elapsedMs(long now) {
+                  return Math.max(
+                          0L,
+                          Math.min(now - START_MS, TOTAL_MS)
+                  );
+              }
+
+              public static double percentage(long now) {
+                  return elapsedMs(now) * 100.0 / TOTAL_MS;
+              }
+
+              public static String formatted(long now) {
+                  return String.format(
+                          Locale.US,
+                          "%.7f%%",
+                          percentage(now)
+                  );
+              }
+
+              public static double survivalPercentage(long now) {
+                  double weeks = elapsedMs(now) / WEEK_MS;
+
+                  if (weeks <= 0.0) {
+                      return 100.0;
+                  }
+
+                  double survival =
+                          Math.exp(
+                                  -Math.pow(
+                                          weeks /
+                                                  SURVIVAL_SCALE_WEEKS,
+                                          SURVIVAL_SHAPE
+                                  )
+                          ) * 100.0;
+
+                  return Math.max(
+                          0.0,
+                          Math.min(100.0, survival)
+                  );
+              }
+
+              public static String survivalFormatted(long now) {
+                  return String.format(
+                          Locale.US,
+                          "%.1f%%",
+                          survivalPercentage(now)
+                  );
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/secondstosuccess/app/NotificationScheduler.java <<'EOF'
+          package com.secondstosuccess.app;
+
+          import android.app.AlarmManager;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.os.Build;
+
+          import java.util.Calendar;
+          import java.util.HashSet;
+          import java.util.Set;
+          import java.util.concurrent.ThreadLocalRandom;
+
+          public final class NotificationScheduler {
+
+              public static final String CHANNEL_ID = "progress_updates";
+
+              private static final int COUNT = 12;
+              private static final int START_HOUR = 6;
+              private static final int END_HOUR = 22;
+
+              private static final int NOTIFICATION_ALARM_BASE = 10000;
+              private static final int NOTIFICATION_ID_BASE = 20000;
+              private static final int DAILY_SCHEDULER_REQUEST = 9000;
+
+              private NotificationScheduler() {}
+
+              public static void ensureChannel(Context context) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      NotificationManager manager =
+                              context.getSystemService(NotificationManager.class);
+
+                      NotificationChannel channel =
+                              new NotificationChannel(
+                                      CHANNEL_ID,
+                                      "Progress updates",
+                                      NotificationManager.IMPORTANCE_DEFAULT
+                              );
+
+                      channel.setDescription(
+                              "12 random daily Seconds to Success progress updates"
+                      );
+
+                      manager.createNotificationChannel(channel);
+                  }
+              }
+
+              public static void schedule(Context context) {
+                  ensureChannel(context);
+
+                  if (System.currentTimeMillis() >= ProgressTime.END_MS) {
+                      return;
+                  }
+
+                  scheduleRandomForToday(context);
+                  scheduleNextDailyGenerator(context);
+              }
+
+              public static void scheduleRandomForToday(Context context) {
+                  long now = System.currentTimeMillis();
+
+                  if (now >= ProgressTime.END_MS) {
+                      return;
+                  }
+
+                  Calendar start = Calendar.getInstance();
+                  start.set(Calendar.HOUR_OF_DAY, START_HOUR);
+                  start.set(Calendar.MINUTE, 0);
+                  start.set(Calendar.SECOND, 0);
+                  start.set(Calendar.MILLISECOND, 0);
+
+                  Calendar end = Calendar.getInstance();
+                  end.set(Calendar.HOUR_OF_DAY, END_HOUR);
+                  end.set(Calendar.MINUTE, 0);
+                  end.set(Calendar.SECOND, 0);
+                  end.set(Calendar.MILLISECOND, 0);
+
+                  long lower =
+                          Math.max(
+                                  start.getTimeInMillis(),
+                                  now + 60_000L
+                          );
+
+                  long upper =
+                          Math.min(
+                                  end.getTimeInMillis(),
+                                  ProgressTime.END_MS
+                          );
+
+                  if (lower >= upper) {
+                      return;
+                  }
+
+                  long availableSeconds = (upper - lower) / 1000L;
+
+                  if (availableSeconds <= 0) {
+                      return;
+                  }
+
+                  Set<Long> chosenSeconds = new HashSet<>();
+
+                  while (
+                          chosenSeconds.size() < COUNT &&
+                          chosenSeconds.size() < availableSeconds
+                  ) {
+                      long randomSecond =
+                              ThreadLocalRandom.current()
+                                      .nextLong(availableSeconds);
+
+                      chosenSeconds.add(randomSecond);
+                  }
+
+                  AlarmManager alarmManager =
+                          (AlarmManager)
+                                  context.getSystemService(
+                                          Context.ALARM_SERVICE
+                                  );
+
+                  int index = 0;
+
+                  for (long randomSecond : chosenSeconds) {
+                      long triggerAt =
+                              lower + randomSecond * 1000L;
+
+                      Intent intent =
+                              new Intent(
+                                      context,
+                                      NotificationReceiver.class
+                              );
+
+                      intent.putExtra(
+                              "notification_id",
+                              NOTIFICATION_ID_BASE + index
+                      );
+
+                      PendingIntent pendingIntent =
+                              PendingIntent.getBroadcast(
+                                      context,
+                                      NOTIFICATION_ALARM_BASE + index,
+                                      intent,
+                                      PendingIntent.FLAG_UPDATE_CURRENT |
+                                              PendingIntent.FLAG_IMMUTABLE
+                              );
+
+                      alarmManager.setAndAllowWhileIdle(
+                              AlarmManager.RTC_WAKEUP,
+                              triggerAt,
+                              pendingIntent
+                      );
+
+                      index++;
+                  }
+              }
+
+              public static void scheduleNextDailyGenerator(
+                      Context context
+              ) {
+                  if (
+                          System.currentTimeMillis() >=
+                                  ProgressTime.END_MS
+                  ) {
+                      return;
+                  }
+
+                  Calendar next = Calendar.getInstance();
+
+                  next.add(Calendar.DAY_OF_YEAR, 1);
+                  next.set(Calendar.HOUR_OF_DAY, 5);
+                  next.set(Calendar.MINUTE, 50);
+                  next.set(Calendar.SECOND, 0);
+                  next.set(Calendar.MILLISECOND, 0);
+
+                  Intent intent =
+                          new Intent(
+                                  context,
+                                  DailyScheduleReceiver.class
+                          );
+
+                  PendingIntent pendingIntent =
+                          PendingIntent.getBroadcast(
+                                  context,
+                                  DAILY_SCHEDULER_REQUEST,
+                                  intent,
+                                  PendingIntent.FLAG_UPDATE_CURRENT |
+                                          PendingIntent.FLAG_IMMUTABLE
+                          );
+
+                  AlarmManager alarmManager =
+                          (AlarmManager)
+                                  context.getSystemService(
+                                          Context.ALARM_SERVICE
+                                  );
+
+                  alarmManager.setAndAllowWhileIdle(
+                          AlarmManager.RTC_WAKEUP,
+                          next.getTimeInMillis(),
+                          pendingIntent
+                  );
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/secondstosuccess/app/NotificationReceiver.java <<'EOF'
+          package com.secondstosuccess.app;
+
+          import android.Manifest;
+          import android.app.Notification;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.os.Build;
+
+          public class NotificationReceiver
+                  extends BroadcastReceiver {
+
+              @Override
+              public void onReceive(
+                      Context context,
+                      Intent intent
+              ) {
+                  long now = System.currentTimeMillis();
+
+                  if (now >= ProgressTime.END_MS) {
+                      return;
+                  }
+
+                  if (
+                          Build.VERSION.SDK_INT >= 33 &&
+                          context.checkSelfPermission(
+                                  Manifest.permission
+                                          .POST_NOTIFICATIONS
+                          ) !=
+                                  PackageManager.PERMISSION_GRANTED
+                  ) {
+                      return;
+                  }
+
+                  NotificationScheduler.ensureChannel(context);
+
+                  Intent openApp =
+                          new Intent(
+                                  context,
+                                  MainActivity.class
+                          );
+
+                  PendingIntent openAppIntent =
+                          PendingIntent.getActivity(
+                                  context,
+                                  30000,
+                                  openApp,
+                                  PendingIntent.FLAG_UPDATE_CURRENT |
+                                          PendingIntent.FLAG_IMMUTABLE
+                          );
+
+                  String percentage =
+                          ProgressTime.formatted(now);
+
+                  String survival =
+                          ProgressTime.survivalFormatted(now);
+
+                  String message =
+                          percentage +
+                          " completado · " +
+                          survival +
+                          " llegan al menos hasta aquí";
+
+                  Notification.Builder builder;
+
+                  if (
+                          Build.VERSION.SDK_INT >=
+                                  Build.VERSION_CODES.O
+                  ) {
+                      builder =
+                              new Notification.Builder(
+                                      context,
+                                      NotificationScheduler
+                                              .CHANNEL_ID
+                              );
+                  } else {
+                      builder =
+                              new Notification.Builder(context);
+                  }
+
+                  Notification notification =
+                          builder
+                                  .setSmallIcon(
+                                          android.R.drawable
+                                                  .ic_popup_reminder
+                                  )
+                                  .setContentTitle(
+                                          "Seconds to Success"
+                                  )
+                                  .setContentText(message)
+                                  .setStyle(
+                                          new Notification
+                                                  .BigTextStyle()
+                                                  .bigText(message)
+                                  )
+                                  .setContentIntent(openAppIntent)
+                                  .setAutoCancel(true)
+                                  .setShowWhen(true)
+                                  .setWhen(now)
+                                  .build();
+
+                  NotificationManager manager =
+                          (NotificationManager)
+                                  context.getSystemService(
+                                          Context
+                                                  .NOTIFICATION_SERVICE
+                                  );
+
+                  manager.notify(
+                          intent.getIntExtra(
+                                  "notification_id",
+                                  (int) (
+                                          now %
+                                          Integer.MAX_VALUE
+                                  )
+                          ),
+                          notification
+                  );
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/secondstosuccess/app/DailyScheduleReceiver.java <<'EOF'
+          package com.secondstosuccess.app;
+
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+
+          public class DailyScheduleReceiver
+                  extends BroadcastReceiver {
+
+              @Override
+              public void onReceive(
+                      Context context,
+                      Intent intent
+              ) {
+                  NotificationScheduler
+                          .scheduleRandomForToday(context);
+
+                  NotificationScheduler
+                          .scheduleNextDailyGenerator(context);
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/secondstosuccess/app/BootReceiver.java <<'EOF'
+          package com.secondstosuccess.app;
+
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+
+          public class BootReceiver extends BroadcastReceiver {
+
+              @Override
+              public void onReceive(
+                      Context context,
+                      Intent intent
+              ) {
+                  NotificationScheduler.schedule(context);
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/secondstosuccess/app/MainActivity.java <<'EOF'
+          package com.secondstosuccess.app;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.pm.PackageManager;
+          import android.graphics.Color;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.view.Gravity;
+          import android.view.ViewGroup;
+          import android.widget.LinearLayout;
+          import android.widget.ProgressBar;
+          import android.widget.TextView;
+
+          public class MainActivity extends Activity {
+
+              private final Handler handler =
+                      new Handler(Looper.getMainLooper());
+
+              private TextView percentageView;
+              private TextView survivalView;
+              private ProgressBar progressBar;
+
+              private final Runnable ticker =
+                      new Runnable() {
+
+                          @Override
+                          public void run() {
+                              updatePercentage();
+
+                              long now =
+                                      System.currentTimeMillis();
+
+                              long delay =
+                                      1000L -
+                                      (now % 1000L);
+
+                              handler.postDelayed(
+                                      this,
+                                      delay
+                              );
+                          }
+                      };
+
+              @Override
+              protected void onCreate(
+                      Bundle savedInstanceState
+              ) {
+                  super.onCreate(savedInstanceState);
+
+                  NotificationScheduler
+                          .ensureChannel(this);
+
+                  if (
+                          Build.VERSION.SDK_INT >= 33 &&
+                          checkSelfPermission(
+                                  Manifest.permission
+                                          .POST_NOTIFICATIONS
+                          ) !=
+                                  PackageManager.PERMISSION_GRANTED
+                  ) {
+                      requestPermissions(
+                              new String[]{
+                                      Manifest.permission
+                                              .POST_NOTIFICATIONS
+                              },
+                              100
+                      );
+                  }
+
+                  NotificationScheduler.schedule(this);
+
+                  LinearLayout root =
+                          new LinearLayout(this);
+
+                  root.setOrientation(
+                          LinearLayout.VERTICAL
+                  );
+
+                  root.setGravity(Gravity.CENTER);
+
+                  root.setPadding(
+                          dp(24),
+                          dp(40),
+                          dp(24),
+                          dp(40)
+                  );
+
+                  root.setBackgroundColor(Color.BLACK);
+
+                  TextView title =
+                          new TextView(this);
+
+                  title.setText(
+                          "SECONDS TO SUCCESS"
+                  );
+
+                  title.setTextColor(
+                          Color.rgb(
+                                  150,
+                                  150,
+                                  150
+                          )
+                  );
+
+                  title.setTextSize(14);
+                  title.setGravity(Gravity.CENTER);
+
+                  percentageView =
+                          new TextView(this);
+
+                  percentageView.setText(
+                          "0.0000000%"
+                  );
+
+                  percentageView.setTextColor(
+                          Color.WHITE
+                  );
+
+                  percentageView.setTextSize(44);
+                  percentageView.setGravity(
+                          Gravity.CENTER
+                  );
+
+                  percentageView.setPadding(
+                          0,
+                          dp(20),
+                          0,
+                          dp(28)
+                  );
+
+                  percentageView.setSingleLine(true);
+
+                  progressBar =
+                          new ProgressBar(
+                                  this,
+                                  null,
+                                  android.R.attr
+                                          .progressBarStyleHorizontal
+                          );
+
+                  progressBar.setMax(1000000);
+
+                  LinearLayout.LayoutParams barParams =
+                          new LinearLayout.LayoutParams(
+                                  ViewGroup.LayoutParams
+                                          .MATCH_PARENT,
+                                  dp(8)
+                          );
+
+                  barParams.setMargins(
+                          0,
+                          0,
+                          0,
+                          dp(24)
+                  );
+
+                  survivalView =
+                          new TextView(this);
+
+                  survivalView.setText(
+                          "≈ 100.0% llegan al menos hasta aquí"
+                  );
+
+                  survivalView.setTextColor(
+                          Color.rgb(
+                                  220,
+                                  220,
+                                  220
+                          )
+                  );
+
+                  survivalView.setTextSize(18);
+                  survivalView.setGravity(
+                          Gravity.CENTER
+                  );
+
+                  survivalView.setPadding(
+                          0,
+                          0,
+                          0,
+                          dp(8)
+                  );
+
+                  TextView modelLabel =
+                          new TextView(this);
+
+                  modelLabel.setText(
+                          "Estimación de persistencia · hábito nuevo muy difícil"
+                  );
+
+                  modelLabel.setTextColor(
+                          Color.rgb(
+                                  100,
+                                  100,
+                                  100
+                          )
+                  );
+
+                  modelLabel.setTextSize(11);
+                  modelLabel.setGravity(
+                          Gravity.CENTER
+                  );
+
+                  modelLabel.setPadding(
+                          0,
+                          0,
+                          0,
+                          dp(26)
+                  );
+
+                  TextView dates =
+                          new TextView(this);
+
+                  dates.setText(
+                          "11 sep 2026 · 8:00 p. m.\n" +
+                          "180 días\n" +
+                          "10 mar 2027 · 8:00 p. m."
+                  );
+
+                  dates.setTextColor(
+                          Color.rgb(
+                                  130,
+                                  130,
+                                  130
+                          )
+                  );
+
+                  dates.setTextSize(13);
+                  dates.setGravity(Gravity.CENTER);
+
+                  root.addView(title);
+                  root.addView(percentageView);
+                  root.addView(
+                          progressBar,
+                          barParams
+                  );
+                  root.addView(survivalView);
+                  root.addView(modelLabel);
+                  root.addView(dates);
+
+                  setContentView(root);
+
+                  updatePercentage();
+              }
+
+              @Override
+              protected void onStart() {
+                  super.onStart();
+
+                  handler.removeCallbacks(ticker);
+                  ticker.run();
+              }
+
+              @Override
+              protected void onStop() {
+                  handler.removeCallbacks(ticker);
+                  super.onStop();
+              }
+
+              private void updatePercentage() {
+                  long now =
+                          System.currentTimeMillis();
+
+                  percentageView.setText(
+                          ProgressTime.formatted(now)
+                  );
+
+                  survivalView.setText(
+                          "≈ " +
+                          ProgressTime.survivalFormatted(now) +
+                          " llegan al menos hasta aquí"
+                  );
+
+                  long elapsed =
+                          ProgressTime.elapsedMs(now);
+
+                  int progress =
+                          (int) Math.round(
+                                  elapsed *
+                                  1000000.0 /
+                                  ProgressTime.TOTAL_MS
+                          );
+
+                  progressBar.setProgress(progress);
+              }
+
+              private int dp(int value) {
+                  return Math.round(
+                          value *
+                          getResources()
+                                  .getDisplayMetrics()
+                                  .density
+                  );
+              }
+          }
+          EOF
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build APK
+        run: gradle :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Seconds-to-success-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
